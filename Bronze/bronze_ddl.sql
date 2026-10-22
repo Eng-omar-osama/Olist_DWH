@@ -211,13 +211,13 @@ BEGIN
             DROP TABLE bronze.sales_order_reviews;
 
         CREATE TABLE bronze.sales_order_reviews (
-            review_id               VARCHAR(50),
-            order_id                VARCHAR(50),
-            review_score            INT,
-            review_comment_title    VARCHAR(255),
+            review_id               VARCHAR(MAX),
+            order_id                VARCHAR(MAX),
+            review_score            VARCHAR(MAX),
+            review_comment_title    VARCHAR(MAX),
             review_comment_message  VARCHAR(MAX),
-            review_creation_date    DATETIME,
-            review_answer_timestamp DATETIME
+            review_creation_date    VARCHAR(MAX),
+            review_answer_timestamp VARCHAR(MAX)
         );
 
         SET @CreatedTables += 1;
