@@ -1,84 +1,9 @@
+
 USE Olist_DWH;
 GO
 
 SET NOCOUNT ON;
 SET XACT_ABORT ON;
-
--- =====================================================
--- 1. PROFILE SUSPICIOUS SELLER CITY VALUES
--- =====================================================
-
-PRINT 'Step 1: Profiling suspicious seller city values...';
-
-SELECT
-    seller_city,
-    COUNT(*) AS Occurrences
-FROM bronze.crm_seller_info
-WHERE seller_city IS NOT NULL
-  AND
-  (
-      seller_city LIKE '%[0-9]%'
-      OR seller_city LIKE '%@%'
-      OR seller_city LIKE '%,%'
-      OR seller_city LIKE '%/%'
-      OR seller_city LIKE '%-%'
-  )
-GROUP BY seller_city
-ORDER BY Occurrences DESC, seller_city;
-
-
--- =====================================================
--- 2. INVESTIGATE SUSPICIOUS CITY DETAILS
--- =====================================================
-
-PRINT 'Step 2: Investigating suspicious city details...';
-
-SELECT
-    seller_city,
-    seller_state,
-    seller_zip_code_prefix,
-    COUNT(*) AS SellerCount
-FROM bronze.crm_seller_info
-WHERE seller_city IN
-(
-    'sao paulo - sp',
-    'andira-pr',
-    'auriflama/sp',
-    'barbacena/ minas gerais',
-    'carapicuiba / sao paulo',
-    'cariacica / es',
-    'jacarei / sao paulo',
-    'lages - sc',
-    'maua/sao paulo',
-    'mogi das cruzes / sp',
-    'novo hamburgo, rio grande do sul, brasil',
-    'pinhais/pr',
-    'ribeirao preto / sao paulo',
-    'rio de janeiro / rio de janeiro',
-    'rio de janeiro, rio de janeiro, brasil',
-    'santo andre/sao paulo',
-    'sao paulo / sao paulo',
-    'sao sebastiao da grama/sp',
-    'sbc/sp',
-    'sp / sp',
-    '04482255',
-    'vendas@creditparts.com.br'
-)
-GROUP BY
-    seller_city,
-    seller_state,
-    seller_zip_code_prefix
-ORDER BY
-    seller_city,
-    seller_state,
-    seller_zip_code_prefix;
-
-
--- =====================================================
--- 3. PREPARE CITY MAPPING DATA
--- =====================================================
-
-PRINT 'Step 3: Preparing seller city mappings...';
 
 DECLARE @CityMapping TABLE
 (
@@ -97,98 +22,111 @@ INSERT INTO @CityMapping
 )
 VALUES
 
--- -----------------------------------------------------
--- APPROVED: Confirmed city name normalization
--- -----------------------------------------------------
+-- =============================================
+-- APPROVED: SPELLING CORRECTIONS
+-- =============================================
 
-(N'andira-pr', N'andira', 'APPROVED',
- N'City name followed by matching state abbreviation'),
+(N'balenario camboriu', N'balneario camboriu', 'APPROVED', N'Spelling correction'),
+(N'belo horizont', N'belo horizonte', 'APPROVED', N'Spelling correction'),
+(N'cascavael', N'cascavel', 'APPROVED', N'Spelling correction'),
+(N'floranopolis', N'florianopolis', 'APPROVED', N'Spelling correction'),
+(N'garulhos', N'guarulhos', 'APPROVED', N'Spelling correction'),
+(N'ao bernardo do campo', N'sao bernardo do campo', 'APPROVED', N'Obvious spelling error'),
+(N'sao bernardo do capo', N'sao bernardo do campo', 'APPROVED', N'Spelling correction'),
+(N'mogi das cruses', N'mogi das cruzes', 'APPROVED', N'Spelling correction'),
+(N'juzeiro do norte', N'juazeiro do norte', 'APPROVED', N'Spelling correction'),
+(N'ribeirao pretp', N'ribeirao preto', 'APPROVED', N'Spelling correction'),
+(N'riberao preto', N'ribeirao preto', 'APPROVED', N'Spelling correction'),
+(N'robeirao preto', N'ribeirao preto', 'APPROVED', N'Spelling correction'),
+(N'sando andre', N'santo andre', 'APPROVED', N'Spelling correction'),
+(N'sao jose do rio pret', N'sao jose do rio preto', 'APPROVED', N'Spelling correction'),
+(N'sao jose dos pinhas', N'sao jose dos pinhais', 'APPROVED', N'Spelling correction'),
+(N'sao paluo', N'sao paulo', 'APPROVED', N'Spelling correction'),
+(N'sao pauo', N'sao paulo', 'APPROVED', N'Spelling correction'),
+(N'sao paulop', N'sao paulo', 'APPROVED', N'Spelling correction'),
+(N'sao paulo sp', N'sao paulo', 'APPROVED', N'City followed by state abbreviation'),
+(N'são paulo', N'sao paulo', 'APPROVED', N'Unicode accent variation'),
+(N'scao jose do rio pardo', N'sao jose do rio pardo', 'APPROVED', N'Spelling correction'),
+(N'tabao da serra', N'taboao da serra', 'APPROVED', N'Spelling correction'),
+(N'portoferreira', N'porto ferreira', 'APPROVED', N'Spacing correction'),
+(N'santa barbara d oeste', N'santa barbara d''oeste', 'APPROVED', N'Name formatting correction'),
+(N'santa barbara d´oeste', N'santa barbara d''oeste', 'APPROVED', N'Apostrophe normalization'),
+(N'sao miguel d''oeste', N'sao miguel do oeste', 'APPROVED', N'Name variation'),
+(N'angra dos reis rj', N'angra dos reis', 'APPROVED', N'City followed by state abbreviation'),
+(N'brasilia df', N'brasilia', 'APPROVED', N'City followed by federal district abbreviation'),
+(N'rio de janeiro \rio de janeiro', N'rio de janeiro', 'APPROVED', N'Duplicate city name with separator'),
 
-(N'auriflama/sp', N'auriflama', 'APPROVED',
- N'City name followed by matching state abbreviation'),
+-- =============================================
+-- REJECTED: STATE NAMES / NOT CITY VALUES
+-- =============================================
 
-(N'barbacena/ minas gerais', N'barbacena', 'APPROVED',
- N'City name followed by matching state name'),
+(N'bahia', NULL, 'REJECTED', N'State name, not municipality'),
+(N'minas gerais', NULL, 'REJECTED', N'State name, not municipality'),
+(N'parana', NULL, 'REJECTED', N'State name, not municipality'),
+(N'santa catarina', NULL, 'REJECTED', N'State name, not municipality'),
+(N'sp', NULL, 'REJECTED', N'State abbreviation, not municipality'),
 
-(N'cariacica / es', N'cariacica', 'APPROVED',
- N'City name followed by matching state abbreviation'),
+-- =============================================
+-- REVIEW: DISTRICTS / AMBIGUOUS VALUES
+-- =============================================
 
-(N'lages - sc', N'lages', 'APPROVED',
- N'City name followed by matching state abbreviation'),
-
-(N'mogi das cruzes / sp', N'mogi das cruzes', 'APPROVED',
- N'City name followed by matching state abbreviation'),
-
-(N'novo hamburgo, rio grande do sul, brasil', N'novo hamburgo', 'APPROVED',
- N'City, state and country format'),
-
-(N'pinhais/pr', N'pinhais', 'APPROVED',
- N'City name followed by matching state abbreviation'),
-
-(N'rio de janeiro / rio de janeiro', N'rio de janeiro', 'APPROVED',
- N'Repeated city name'),
-
-(N'rio de janeiro, rio de janeiro, brasil', N'rio de janeiro', 'APPROVED',
- N'City, state and country format'),
-
-(N'sao paulo - sp', N'sao paulo', 'APPROVED',
- N'City name followed by matching state abbreviation'),
-
-(N'sao paulo / sao paulo', N'sao paulo', 'APPROVED',
- N'Repeated city name'),
-
-(N'sao sebastiao da grama/sp', N'sao sebastiao da grama', 'APPROVED',
- N'City name followed by matching state abbreviation'),
-
-
--- -----------------------------------------------------
--- REVIEW: City interpretation requires verification
--- -----------------------------------------------------
-
-(N'carapicuiba / sao paulo', NULL, 'REVIEW',
- N'Verify city and state interpretation'),
-
-(N'jacarei / sao paulo', NULL, 'REVIEW',
- N'Verify city and state interpretation'),
-
-(N'maua/sao paulo', NULL, 'REVIEW',
- N'Verify city and state interpretation'),
-
-(N'ribeirao preto / sao paulo', NULL, 'REVIEW',
- N'Verify city and state interpretation'),
-
-(N'santo andre/sao paulo', NULL, 'REVIEW',
- N'Verify city and state interpretation'),
-
-(N'sbc/sp', NULL, 'REVIEW',
- N'Possible abbreviation; requires confirmation'),
-
-(N'sp / sp', NULL, 'REVIEW',
- N'Cannot identify a reliable city name'),
+(N'centro', NULL, 'REVIEW', N'Generic neighborhood or district name'),
+(N'aguas claras df', NULL, 'REVIEW', N'Administrative region; municipality identity needs verification'),
+(N'gama', NULL, 'REVIEW', N'Administrative region; municipality identity needs verification'),
+(N'pirituba', NULL, 'REVIEW', N'District within Sao Paulo municipality'),
+(N'vicente de carvalho', NULL, 'REVIEW', N'Locality name; municipality identity needs verification'),
+(N'sbc', NULL, 'REVIEW', N'Possible abbreviation for Sao Bernardo do Campo'),
+(N'arrial d''ajuda (porto seguro)', NULL, 'REVIEW', N'District/locality associated with Porto Seguro'),
+(N'california', NULL, 'REVIEW', N'Possible municipality; requires state/ZIP verification'),
+(N'colorado', NULL, 'REVIEW', N'Ambiguous municipality name'),
+(N'fronteira', NULL, 'REVIEW', N'Requires state/ZIP verification'),
+(N'tocantins', NULL, 'REVIEW', N'Could refer to a municipality or state'),
+(N'viana', NULL, 'REVIEW', N'Ambiguous municipality name'),
+(N'sao bento', NULL, 'REVIEW', N'Ambiguous municipality name'),
+(N'sao jose', NULL, 'REVIEW', N'Ambiguous municipality name'),
+(N'castro pires', NULL, 'REVIEW', N'Unverified city name');
 
 
--- -----------------------------------------------------
--- REJECTED: Invalid city values
--- -----------------------------------------------------
+-- =============================================
+-- VALIDATION
+-- =============================================
 
-(N'04482255', NULL, 'REJECTED',
- N'Numeric value, not a city name'),
+IF EXISTS
+(
+    SELECT 1
+    FROM @CityMapping
+    WHERE MappingStatus = 'APPROVED'
+      AND NULLIF(LTRIM(RTRIM(StandardCity)), '') IS NULL
+)
+    THROW 50020, 'APPROVED mapping requires StandardCity.', 1;
 
-(N'vendas@creditparts.com.br', NULL, 'REJECTED',
- N'Email address, not a city name');
+IF EXISTS
+(
+    SELECT 1
+    FROM @CityMapping
+    WHERE MappingStatus IN ('REJECTED', 'REVIEW')
+      AND StandardCity IS NOT NULL
+)
+    THROW 50021, 'REJECTED and REVIEW mappings must have NULL StandardCity.', 1;
+
+IF EXISTS
+(
+    SELECT SourceCity
+    FROM @CityMapping
+    GROUP BY SourceCity
+    HAVING COUNT(*) > 1
+)
+    THROW 50022, 'Duplicate SourceCity values in mapping input.', 1;
 
 
--- =====================================================
--- 4. INSERT / UPDATE CITY MAPPING TABLE
--- =====================================================
-
-PRINT 'Step 4: Updating city mapping reference table...';
+-- =============================================
+-- UPSERT
+-- =============================================
 
 BEGIN TRY
 
     BEGIN TRANSACTION;
 
-    -- Update existing mappings
     UPDATE Target
     SET
         Target.StandardCity = Source.StandardCity,
@@ -196,12 +134,11 @@ BEGIN TRY
         Target.Notes = Source.Notes
     FROM silver.ref_seller_city_mapping AS Target
     INNER JOIN @CityMapping AS Source
-        ON LOWER(TRIM(Target.SourceCity)) =
-           LOWER(TRIM(Source.SourceCity));
+        ON LOWER(LTRIM(RTRIM(Target.SourceCity))) =
+           LOWER(LTRIM(RTRIM(Source.SourceCity)));
 
     PRINT 'Existing mappings updated.';
 
-    -- Insert mappings that do not exist
     INSERT INTO silver.ref_seller_city_mapping
     (
         SourceCity,
@@ -219,48 +156,46 @@ BEGIN TRY
     (
         SELECT 1
         FROM silver.ref_seller_city_mapping AS Target
-        WHERE LOWER(TRIM(Target.SourceCity)) =
-              LOWER(TRIM(Source.SourceCity))
+        WHERE LOWER(LTRIM(RTRIM(Target.SourceCity))) =
+              LOWER(LTRIM(RTRIM(Source.SourceCity)))
     );
 
     PRINT 'New mappings inserted.';
 
     COMMIT TRANSACTION;
 
+    PRINT 'Seller city mapping completed successfully.';
+
 END TRY
+
 BEGIN CATCH
 
     IF @@TRANCOUNT > 0
         ROLLBACK TRANSACTION;
-
-    PRINT 'Error updating city mapping table.';
-    PRINT ERROR_MESSAGE();
 
     THROW;
 
 END CATCH;
 
 
--- =====================================================
--- 5. REVIEW FINAL CITY MAPPING
--- =====================================================
+-- =============================================
+-- REVIEW RESULTS
+-- =============================================
 
-PRINT 'Step 5: Reviewing final city mapping results...';
+SELECT
+    MappingStatus,
+    COUNT(*) AS MappingCount
+FROM silver.ref_seller_city_mapping
+GROUP BY MappingStatus
+ORDER BY MappingStatus;
 
 SELECT
     SourceCity,
     StandardCity,
     MappingStatus,
-    Notes,
-    CreatedAt
+    Notes
 FROM silver.ref_seller_city_mapping
-WHERE SourceCity IN
-(
-    SELECT SourceCity
-    FROM @CityMapping
-)
-ORDER BY
-    MappingStatus,
-    SourceCity;
+ORDER BY MappingStatus, SourceCity;
 
 GO
+
