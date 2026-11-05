@@ -1,278 +1,123 @@
-
-import os
 import csv
-import json
-import hashlib
+import time
 import pyodbc
-import pandas as pd
 
-from collections import Counter
-from decimal import Decimal, ROUND_HALF_UP
-from datetime import datetime, date, timedelta
+from pathlib import Path
+from datetime import datetime
 
 
 # ============================================================
 # 1. CONFIGURATION
 # ============================================================
 
-DATA_PATH = r"C:\Users\Legion\Downloads\Olist_DWH\Data"
-
-REPORT_PATH = os.path.join(
-    DATA_PATH,
-    "Bronze_Quality_Report.xlsx"
-)
-
 SERVER = r"OMAR-OSAMA\OMAROSAMASQL22"
 DATABASE = "Olist_DWH"
 
-SCHEMA = "bronze"
-
-BATCH_SIZE = 10000
-MAX_MISMATCH_SAMPLES = 1000
-
-
-TABLES = {
-    "crm_customers_dataset.csv": "crm_cust_info",
-    "crm_geolocation_dataset.csv": "crm_geolocation_info",
-    "crm_sellers_dataset.csv": "crm_seller_info",
-    "sales_order_items_dataset.csv": "sales_order_items",
-    "sales_order_reviews_dataset.csv": "sales_order_reviews",
-    "sales_orders_dataset.csv": "sales_orders",
-    "payment_order_dataset.csv": "payments_order_info",
-    "catalog_products_dataset.csv": "catalog_products",
-    "catalog_product_category_name_translation.csv":
-        "catalog_category_translation"
-}
-
-
-SHEET_PREFIXES = {
-    "crm_cust_info": "customers",
-    "crm_geolocation_info": "geo",
-    "crm_seller_info": "sellers",
-    "sales_order_items": "items",
-    "sales_order_reviews": "reviews",
-    "sales_orders": "orders",
-    "payments_order_info": "payments",
-    "catalog_products": "products",
-    "catalog_category_translation": "categories"
-}
-
-
-# ============================================================
-# 2. SQL CONNECTION
-# ============================================================
-
-CONNECTION_STRING = (
-    "DRIVER={ODBC Driver 17 for SQL Server};"
-    f"SERVER={SERVER};"
-    f"DATABASE={DATABASE};"
-    "Trusted_Connection=yes;"
+DATA_PATH = Path(
+    r"C:\Users\Legion\Downloads\Olist_DWH\Data"
 )
 
+BATCH_SIZE = 10_000
+PROGRESS_EVERY = 10
 
-# ============================================================
-# 3. VALUE NORMALIZATION
-# ============================================================
-
-def normalize_datetime(value, sql_type):
-
-    if isinstance(value, datetime):
-        dt = value
-
-    elif isinstance(value, date):
-        dt = datetime.combine(value, datetime.min.time())
-
-    else:
-        value = str(value).strip()
-
-        if value.endswith("Z"):
-            value = value[:-1] + "+00:00"
-
-        dt = datetime.fromisoformat(value)
-
-    if dt.tzinfo is not None:
-        dt = dt.replace(tzinfo=None)
-
-    # SQL Server DATETIME precision:
-    # Approximately 0.000, 0.003, 0.007 seconds.
-
-    if sql_type == "datetime":
-
-        base = dt.replace(microsecond=0)
-
-        ticks = (
-            dt.microsecond * 300 + 500000
-        ) // 1000000
-
-        if ticks >= 300:
-            base += timedelta(seconds=1)
-            ticks = 0
-
-        milliseconds = (
-            ticks * 1000 + 150
-        ) // 300
-
-        if milliseconds >= 1000:
-            base += timedelta(seconds=1)
-            milliseconds = 0
-
-        dt = base.replace(
-            microsecond=milliseconds * 1000
-        )
-
-    elif sql_type == "smalldatetime":
-
-        if dt.second >= 30:
-            dt = dt.replace(
-                second=0,
-                microsecond=0
-            ) + timedelta(minutes=1)
-        else:
-            dt = dt.replace(
-                second=0,
-                microsecond=0
-            )
-
-    return dt.strftime("%Y-%m-%d %H:%M:%S.%f")
-
-
-def normalize_value(value, metadata):
-
-    sql_type = metadata["type"].lower()
-    scale = metadata["scale"]
-
-    # Empty CSV values are converted to SQL NULL
-    # by the existing Bronze Loader.
-
-    if value is None:
-        return None
-
-    if isinstance(value, str) and value == "":
-        return None
-
-    # Text columns
-
-    if sql_type in (
-        "nvarchar",
-        "varchar",
-        "nchar",
-        "char",
-        "text",
-        "ntext"
-    ):
-        return str(value)
-
-    # Integer columns
-
-    if sql_type in (
-        "int",
-        "bigint",
-        "smallint",
-        "tinyint"
-    ):
-        return str(int(Decimal(str(value))))
-
-    # Decimal columns
-
-    if sql_type in (
-        "decimal",
-        "numeric"
-    ):
-
-        number = Decimal(str(value))
-
-        quantizer = Decimal("1").scaleb(-scale)
-
-        number = number.quantize(
-            quantizer,
-            rounding=ROUND_HALF_UP
-        )
-
-        return format(number, "f")
-
-    # Floating-point columns
-
-    if sql_type in ("float", "real"):
-
-        number = Decimal(str(value))
-
-        return format(number.normalize(), "f")
-
-    # Datetime columns
-
-    if sql_type in (
-        "datetime",
-        "datetime2",
-        "smalldatetime"
-    ):
-        return normalize_datetime(
-            value,
-            sql_type
-        )
-
-    # Date columns
-
-    if sql_type == "date":
-
-        if isinstance(value, datetime):
-            return value.date().isoformat()
-
-        if isinstance(value, date):
-            return value.isoformat()
-
-        return date.fromisoformat(
-            str(value)
-        ).isoformat()
-
-    # Bit columns
-
-    if sql_type == "bit":
-
-        if str(value).strip().lower() in (
-            "1", "true"
-        ):
-            return "1"
-
-        return "0"
-
-    return str(value)
+DRIVER = "ODBC Driver 17 for SQL Server"
 
 
 # ============================================================
-# 4. ROW HASHING
+# 2. TABLE CONFIGURATION
 # ============================================================
 
-def create_row_hash(row, metadata):
+TABLES = [
 
-    normalized_row = tuple(
-        normalize_value(value, column_metadata)
-        for value, column_metadata in zip(row, metadata)
+    {
+        "file": "crm_customers_dataset.csv",
+        "schema": "bronze",
+        "table": "crm_cust_info"
+    },
+
+    {
+        "file": "crm_geolocation_dataset.csv",
+        "schema": "bronze",
+        "table": "crm_geolocation_info"
+    },
+
+    {
+        "file": "crm_sellers_dataset.csv",
+        "schema": "bronze",
+        "table": "crm_seller_info"
+    },
+
+    {
+        "file": "sales_order_items_dataset.csv",
+        "schema": "bronze",
+        "table": "sales_order_items"
+    },
+
+    {
+        "file": "sales_order_reviews_dataset.csv",
+        "schema": "bronze",
+        "table": "sales_order_reviews"
+    },
+
+    {
+        "file": "sales_orders_dataset.csv",
+        "schema": "bronze",
+        "table": "sales_orders"
+    },
+
+    {
+        "file": "payment_order_dataset.csv",
+        "schema": "bronze",
+        "table": "payments_order_info"
+    },
+
+    {
+        "file": "catalog_products_dataset.csv",
+        "schema": "bronze",
+        "table": "catalog_products"
+    },
+
+    {
+        "file": "catalog_product_category_name_translation.csv",
+        "schema": "bronze",
+        "table": "catalog_category_translation"
+    }
+
+]
+
+
+# ============================================================
+# 3. DATABASE CONNECTION
+# ============================================================
+
+def get_connection():
+
+    connection_string = (
+        f"DRIVER={{{DRIVER}}};"
+        f"SERVER={SERVER};"
+        f"DATABASE={DATABASE};"
+        "Trusted_Connection=yes;"
     )
 
-    serialized = json.dumps(
-        normalized_row,
-        ensure_ascii=False,
-        separators=(",", ":")
+    return pyodbc.connect(
+        connection_string,
+        autocommit=False
     )
 
-    return hashlib.sha256(
-        serialized.encode("utf-8")
-    ).hexdigest()
-
 
 # ============================================================
-# 5. SQL TABLE METADATA
+# 4. GET TARGET TABLE METADATA
 # ============================================================
 
-def get_table_metadata(cursor, table_name):
+def get_table_columns(cursor, schema, table):
 
     query = """
         SELECT
-            c.name,
+            c.name AS column_name,
             t.name AS data_type,
-            c.scale,
+            c.max_length,
             c.precision,
-            c.column_id
+            c.scale
 
         FROM sys.columns c
 
@@ -288,560 +133,495 @@ def get_table_metadata(cursor, table_name):
         WHERE
             s.name = ?
             AND tb.name = ?
+            AND c.is_identity = 0
+            AND c.is_computed = 0
 
-        ORDER BY c.column_id;
+        ORDER BY
+            c.column_id;
     """
 
     cursor.execute(
         query,
-        SCHEMA,
-        table_name
+        (schema, table)
     )
 
     columns = cursor.fetchall()
 
-    metadata = []
+    if not columns:
 
-    for column in columns:
+        raise ValueError(
+            f"Target table not found: {schema}.{table}"
+        )
 
-        metadata.append({
-            "name": column.name,
-            "type": column.data_type,
-            "scale": column.scale,
-            "precision": column.precision
-        })
-
-    return metadata
+    return columns
 
 
 # ============================================================
-# 6. READ SOURCE CSV
+# 5. VALIDATE CSV HEADERS
 # ============================================================
 
-def read_source_csv(file_path, metadata):
-
-    source_counts = Counter()
-
-    source_rows = 0
-
-    with open(
-        file_path,
-        "r",
-        encoding="utf-8-sig",
-        newline=""
-    ) as file:
-
-        reader = csv.reader(file)
-
-        headers = next(reader)
-
-        expected_columns = [
-            column["name"]
-            for column in metadata
-        ]
-
-        if (
-            len(headers) != len(expected_columns)
-            or set(headers) != set(expected_columns)
-        ):
-
-            raise ValueError(
-                "CSV columns do not match SQL table columns."
-            )
-
-        # Align SQL metadata with CSV column order.
-
-        metadata_map = {
-            column["name"]: column
-            for column in metadata
-        }
-
-        ordered_metadata = [
-            metadata_map[column]
-            for column in headers
-        ]
-
-        for row_number, row in enumerate(
-            reader,
-            start=2
-        ):
-
-            if len(row) != len(headers):
-
-                raise ValueError(
-                    f"Invalid column count at CSV row {row_number}"
-                )
-
-            row_hash = create_row_hash(
-                row,
-                ordered_metadata
-            )
-
-            source_counts[row_hash] += 1
-            source_rows += 1
-
-    return (
-        source_counts,
-        source_rows,
-        headers,
-        ordered_metadata
-    )
-
-
-# ============================================================
-# 7. READ BRONZE TABLE
-# ============================================================
-
-def read_bronze_table(
-    connection,
-    table_name,
-    metadata,
-    headers
+def validate_headers(
+    source_headers,
+    target_columns,
+    schema,
+    table
 ):
 
-    bronze_counts = Counter()
+    source_map = {
+        name.strip().lower(): index
+        for index, name in enumerate(source_headers)
+    }
 
-    bronze_rows = 0
+    target_names = [
+        column.column_name
+        for column in target_columns
+    ]
 
-    columns_sql = ", ".join(
-        f"[{column}]"
-        for column in headers
+    target_map = {
+        name.lower(): name
+        for name in target_names
+    }
+
+    source_set = set(source_map.keys())
+    target_set = set(target_map.keys())
+
+    missing_columns = target_set - source_set
+    extra_columns = source_set - target_set
+
+    if missing_columns or extra_columns:
+
+        raise ValueError(
+            f"\nColumn mismatch in {schema}.{table}"
+            f"\nMissing in CSV: {sorted(missing_columns)}"
+            f"\nExtra in CSV: {sorted(extra_columns)}"
+        )
+
+    # Match CSV columns to target column order.
+
+    source_indices = [
+        source_map[column.lower()]
+        for column in target_names
+    ]
+
+    return target_names, source_indices
+
+
+# ============================================================
+# 6. INSERT BATCH
+# ============================================================
+
+def insert_batch(
+    connection,
+    schema,
+    table,
+    columns,
+    rows
+):
+
+    if not rows:
+        return
+
+    column_names = ", ".join(
+        f"[{column.replace(']', ']]')}]"
+        for column in columns
+    )
+
+    placeholders = ", ".join(
+        ["?"] * len(columns)
     )
 
     query = f"""
-        SELECT {columns_sql}
-        FROM [{SCHEMA}].[{table_name}];
+        INSERT INTO [{schema}].[{table}]
+        ({column_names})
+        VALUES ({placeholders});
     """
 
-    cursor = connection.cursor()
+    # Calculate maximum parameter length per column.
 
-    cursor.execute(query)
+    input_sizes = []
 
-    while True:
+    for col_index in range(len(columns)):
 
-        rows = cursor.fetchmany(BATCH_SIZE)
+        max_length = max(
+            (
+                len(value)
+                for row in rows
+                if (value := row[col_index]) is not None
+            ),
+            default=1
+        )
 
-        if not rows:
-            break
-
-        for row in rows:
-
-            row_hash = create_row_hash(
-                row,
-                metadata
+        input_sizes.append(
+            (
+                pyodbc.SQL_WVARCHAR,
+                max(1, max_length),
+                0
             )
+        )
 
-            bronze_counts[row_hash] += 1
-            bronze_rows += 1
+    # Dedicated cursor:
+    # Prevent parameter settings from affecting metadata queries.
 
-    return bronze_counts, bronze_rows
-
-
-# ============================================================
-# 8. GET MISMATCH SAMPLES
-# ============================================================
-
-def get_source_mismatch_samples(
-    file_path,
-    metadata,
-    headers,
-    remaining_counts
-):
-
-    samples = []
-
-    if not remaining_counts:
-        return samples
-
-    with open(
-        file_path,
-        "r",
-        encoding="utf-8-sig",
-        newline=""
-    ) as file:
-
-        reader = csv.reader(file)
-
-        next(reader)
-
-        for row in reader:
-
-            if len(samples) >= MAX_MISMATCH_SAMPLES:
-                break
-
-            row_hash = create_row_hash(
-                row,
-                metadata
-            )
-
-            if remaining_counts[row_hash] > 0:
-
-                samples.append(dict(zip(headers, row)))
-
-                remaining_counts[row_hash] -= 1
-
-    return samples
-
-
-def get_bronze_mismatch_samples(
-    connection,
-    table_name,
-    metadata,
-    headers,
-    remaining_counts
-):
-
-    samples = []
-
-    if not remaining_counts:
-        return samples
-
-    columns_sql = ", ".join(
-        f"[{column}]"
-        for column in headers
-    )
-
-    query = f"""
-        SELECT {columns_sql}
-        FROM [{SCHEMA}].[{table_name}];
-    """
-
-    cursor = connection.cursor()
-
-    cursor.execute(query)
-
-    while True:
-
-        rows = cursor.fetchmany(BATCH_SIZE)
-
-        if not rows:
-            break
-
-        for row in rows:
-
-            if len(samples) >= MAX_MISMATCH_SAMPLES:
-                return samples
-
-            row_hash = create_row_hash(
-                row,
-                metadata
-            )
-
-            if remaining_counts[row_hash] > 0:
-
-                samples.append(
-                    dict(zip(headers, row))
-                )
-
-                remaining_counts[row_hash] -= 1
-
-    return samples
-
-
-# ============================================================
-# 9. VALIDATE ALL TABLES
-# ============================================================
-
-def validate_all_tables():
-
-    connection = pyodbc.connect(
-        CONNECTION_STRING
-    )
-
-    summary = []
-    mismatch_sheets = {}
+    insert_cursor = connection.cursor()
 
     try:
 
-        cursor = connection.cursor()
-
-        total_tables = len(TABLES)
-
-        for index, (csv_file, table_name) in enumerate(
-            TABLES.items(),
-            start=1
-        ):
-
-            print("\n" + "=" * 65)
-
-            print(
-                f"[{index}/{total_tables}] Validating: {table_name}"
-            )
-
-            print("=" * 65)
-
-            file_path = os.path.join(
-                DATA_PATH,
-                csv_file
-            )
-
-            try:
-
-                if not os.path.exists(file_path):
-
-                    raise FileNotFoundError(
-                        f"CSV file not found: {file_path}"
-                    )
-
-                # Get SQL metadata
-
-                print("Step 1: Reading SQL metadata...")
-
-                metadata = get_table_metadata(
-                    cursor,
-                    table_name
-                )
-
-                if not metadata:
-
-                    raise ValueError(
-                        "SQL table does not exist or has no columns."
-                    )
-
-                # Read source CSV
-
-                print("Step 2: Reading source CSV...")
-
-                (
-                    source_counts,
-                    source_rows,
-                    headers,
-                    ordered_metadata
-                ) = read_source_csv(
-                    file_path,
-                    metadata
-                )
-
-                print(
-                    f"Source rows: {source_rows:,}"
-                )
-
-                # Read Bronze table
-
-                print("Step 3: Reading Bronze table...")
-
-                (
-                    bronze_counts,
-                    bronze_rows
-                ) = read_bronze_table(
-                    connection,
-                    table_name,
-                    ordered_metadata,
-                    headers
-                )
-
-                print(
-                    f"Bronze rows: {bronze_rows:,}"
-                )
-
-                # Multiset comparison:
-                # Preserves duplicate row occurrences.
-
-                matching_rows = sum(
-                    (source_counts & bronze_counts).values()
-                )
-
-                source_only_counts = (
-                    source_counts - bronze_counts
-                )
-
-                bronze_only_counts = (
-                    bronze_counts - source_counts
-                )
-
-                source_only = sum(
-                    source_only_counts.values()
-                )
-
-                bronze_only = sum(
-                    bronze_only_counts.values()
-                )
-
-                total_mismatches = (
-                    source_only + bronze_only
-                )
-
-                status = (
-                    "PASS"
-                    if source_only == 0 and bronze_only == 0
-                    else "FAIL"
-                )
-
-                print("\nValidation Results:")
-
-                print(
-                    f"Matching rows: {matching_rows:,}"
-                )
-
-                print(
-                    f"Source-only rows: {source_only:,}"
-                )
-
-                print(
-                    f"Bronze-only rows: {bronze_only:,}"
-                )
-
-                print(
-                    f"Status: {status}"
-                )
-
-                summary.append({
-
-                    "Table": table_name,
-
-                    "Source Rows": source_rows,
-
-                    "Bronze Rows": bronze_rows,
-
-                    "Matching Rows": matching_rows,
-
-                    "Source Only": source_only,
-
-                    "Bronze Only": bronze_only,
-
-                    "Total Mismatches": total_mismatches,
-
-                    "Status": status,
-
-                    "Error": ""
-
-                })
-
-                # Generate mismatch samples only when needed.
-
-                if status == "FAIL":
-
-                    print(
-                        "Step 4: Collecting mismatch samples..."
-                    )
-
-                    prefix = SHEET_PREFIXES.get(
-                        table_name,
-                        table_name[:10]
-                    )
-
-                    source_samples = (
-                        get_source_mismatch_samples(
-                            file_path,
-                            ordered_metadata,
-                            headers,
-                            source_only_counts.copy()
-                        )
-                    )
-
-                    bronze_samples = (
-                        get_bronze_mismatch_samples(
-                            connection,
-                            table_name,
-                            ordered_metadata,
-                            headers,
-                            bronze_only_counts.copy()
-                        )
-                    )
-
-                    if source_samples:
-
-                        mismatch_sheets[
-                            f"{prefix}_SRC"
-                        ] = source_samples
-
-                    if bronze_samples:
-
-                        mismatch_sheets[
-                            f"{prefix}_BRONZE"
-                        ] = bronze_samples
-
-            except Exception as error:
-
-                print(f"ERROR: {error}")
-
-                summary.append({
-
-                    "Table": table_name,
-
-                    "Source Rows": None,
-
-                    "Bronze Rows": None,
-
-                    "Matching Rows": None,
-
-                    "Source Only": None,
-
-                    "Bronze Only": None,
-
-                    "Total Mismatches": None,
-
-                    "Status": "ERROR",
-
-                    "Error": str(error)
-
-                })
+        insert_cursor.fast_executemany = True
+
+        insert_cursor.setinputsizes(
+            input_sizes
+        )
+
+        insert_cursor.executemany(
+            query,
+            rows
+        )
 
     finally:
 
-        connection.close()
+        insert_cursor.close()
 
-    # ========================================================
-    # 10. EXPORT EXCEL REPORT
-    # ========================================================
-
-    print("\n" + "=" * 65)
-    print("Generating Excel Report...")
-    print("=" * 65)
-
-    summary_df = pd.DataFrame(summary)
-
-    with pd.ExcelWriter(
-        REPORT_PATH,
-        engine="openpyxl"
-    ) as writer:
-
-        summary_df.to_excel(
-            writer,
-            sheet_name="Validation_Summary",
-            index=False
-        )
-
-        for sheet_name, rows in mismatch_sheets.items():
-
-            pd.DataFrame(rows).to_excel(
-                writer,
-                sheet_name=sheet_name[:31],
-                index=False
-            )
-
-    print("\nValidation Completed.")
-
-    print(
-        f"Report saved to: {REPORT_PATH}"
-    )
-
-    print("\nFinal Summary:")
-
-    print(
-        summary_df[
-            ["Table", "Matching Rows", "Total Mismatches", "Status"]
-        ].to_string(index=False)
-    )
-
-
-    failed_tables = [
-        row for row in summary
-        if row.get("Status") != "PASS"
-    ]
-
-    if failed_tables:
-        print("\nVALIDATION FAILED!")
-        raise SystemExit(1)
-
-    print("\nVALIDATION PASSED!")
-    raise SystemExit(0)
 
 # ============================================================
-# 11. EXECUTION
+# 7. LOAD SINGLE TABLE
+# ============================================================
+
+def load_table(connection, metadata_cursor, config):
+
+    file_name = config["file"]
+    schema = config["schema"]
+    table = config["table"]
+
+    file_path = DATA_PATH / file_name
+
+    print("\n" + "=" * 65)
+    print(f"LOADING {schema}.{table}".center(65))
+    print("=" * 65)
+
+    print(f"Source file : {file_name}")
+    print(f"Target table: {schema}.{table}")
+
+    if not file_path.exists():
+
+        raise FileNotFoundError(
+            f"Source file not found: {file_path}"
+        )
+
+    start_time = time.time()
+
+    # --------------------------------------------------------
+    # 7.1 GET TARGET METADATA
+    # --------------------------------------------------------
+
+    target_columns = get_table_columns(
+        metadata_cursor,
+        schema,
+        table
+    )
+
+    # --------------------------------------------------------
+    # 7.2 READ CSV
+    # --------------------------------------------------------
+
+    loaded_rows = 0
+    batch = []
+    batch_number = 0
+
+    with open(
+        file_path,
+        mode="r",
+        encoding="utf-8-sig",
+        newline=""
+    ) as file:
+
+        reader = csv.reader(
+            file,
+            delimiter=",",
+            quotechar='"',
+            doublequote=True,
+            strict=True
+        )
+
+        source_headers = next(reader)
+
+        target_columns_names, source_indices = (
+            validate_headers(
+                source_headers,
+                target_columns,
+                schema,
+                table
+            )
+        )
+
+        print(
+            f"Columns     : {len(target_columns_names)}"
+        )
+
+        # ----------------------------------------------------
+        # 7.3 PROCESS ROWS
+        # ----------------------------------------------------
+
+        for row in reader:
+
+            if len(row) != len(source_headers):
+
+                raise ValueError(
+                    f"Invalid CSV row structure in "
+                    f"{file_name}, line {reader.line_num}. "
+                    f"Expected {len(source_headers)} fields, "
+                    f"received {len(row)}."
+                )
+
+            values = []
+
+            for index in source_indices:
+
+                value = row[index]
+
+                # Match the ingestion rule:
+                # Empty CSV values become SQL NULL.
+
+                if value == "":
+                    value = None
+
+                values.append(value)
+
+            batch.append(tuple(values))
+
+            # ------------------------------------------------
+            # 7.4 INSERT FULL BATCH
+            # ------------------------------------------------
+
+            if len(batch) >= BATCH_SIZE:
+
+                insert_batch(
+                    connection,
+                    schema,
+                    table,
+                    target_columns_names,
+                    batch
+                )
+
+                loaded_rows += len(batch)
+
+                batch.clear()
+
+                batch_number += 1
+
+                if batch_number % PROGRESS_EVERY == 0:
+
+                    print(
+                        f"Inserted rows: {loaded_rows:,}"
+                    )
+
+        # ----------------------------------------------------
+        # 7.5 INSERT REMAINING ROWS
+        # ----------------------------------------------------
+
+        if batch:
+
+            insert_batch(
+                connection,
+                schema,
+                table,
+                target_columns_names,
+                batch
+            )
+
+            loaded_rows += len(batch)
+
+            batch.clear()
+
+    duration = time.time() - start_time
+
+    print(f"Loaded rows : {loaded_rows:,}")
+    print(f"Duration    : {duration:.2f} seconds")
+    print("Status      : SUCCESS")
+
+    return {
+        "table": f"{schema}.{table}",
+        "rows": loaded_rows,
+        "duration": duration,
+        "status": "SUCCESS"
+    }
+
+
+# ============================================================
+# 8. TRUNCATE BRONZE TABLES
+# ============================================================
+
+def truncate_bronze_tables(cursor):
+
+    print("\n" + "=" * 65)
+    print("TRUNCATING BRONZE TABLES".center(65))
+    print("=" * 65)
+
+    for config in TABLES:
+
+        schema = config["schema"]
+        table = config["table"]
+
+        print(
+            f"Truncating {schema}.{table}"
+        )
+
+        cursor.execute(
+            f"TRUNCATE TABLE [{schema}].[{table}];"
+        )
+
+    print("\nAll Bronze tables truncated.")
+
+
+# ============================================================
+# 9. MAIN EXECUTION
+# ============================================================
+
+def main():
+
+    start_time = datetime.now()
+
+    results = []
+
+    print("\n" + "=" * 65)
+    print("BRONZE LAYER INGESTION".center(65))
+    print("=" * 65)
+
+    print(f"Database    : {DATABASE}")
+    print(f"Server      : {SERVER}")
+    print(f"Source      : {DATA_PATH}")
+    print(f"Batch size  : {BATCH_SIZE:,}")
+    print(f"Start time  : {start_time}")
+
+    connection = None
+    metadata_cursor = None
+
+    try:
+
+        # ----------------------------------------------------
+        # 9.1 CONNECT
+        # ----------------------------------------------------
+
+        print("\nConnecting to SQL Server...")
+
+        connection = get_connection()
+
+        metadata_cursor = connection.cursor()
+
+        print("Connection established successfully.")
+
+        # ----------------------------------------------------
+        # 9.2 TRUNCATE
+        # ----------------------------------------------------
+
+        truncate_bronze_tables(
+            metadata_cursor
+        )
+
+        # ----------------------------------------------------
+        # 9.3 LOAD ALL TABLES
+        # ----------------------------------------------------
+
+        for config in TABLES:
+
+            result = load_table(
+                connection,
+                metadata_cursor,
+                config
+            )
+
+            results.append(result)
+
+        # ----------------------------------------------------
+        # 9.4 COMMIT
+        # ----------------------------------------------------
+
+        print("\n" + "=" * 65)
+        print("COMMITTING TRANSACTION".center(65))
+        print("=" * 65)
+
+        connection.commit()
+
+        print("Transaction committed successfully.")
+
+        # ----------------------------------------------------
+        # 9.5 FINAL SUMMARY
+        # ----------------------------------------------------
+
+        total_rows = sum(
+            result["rows"]
+            for result in results
+        )
+
+        total_duration = sum(
+            result["duration"]
+            for result in results
+        )
+
+        print("\n" + "=" * 65)
+        print("BRONZE INGESTION SUMMARY".center(65))
+        print("=" * 65)
+
+        for result in results:
+
+            print(
+                f"{result['table']:<40}"
+                f"{result['rows']:>15,} rows"
+            )
+
+        print("-" * 65)
+
+        print(
+            f"{'TOTAL ROWS':<40}"
+            f"{total_rows:>15,}"
+        )
+
+        print(
+            f"Total loading duration: "
+            f"{total_duration:.2f} seconds"
+        )
+
+        print(
+            f"Start time: {start_time}"
+        )
+
+        print(
+            f"End time  : {datetime.now()}"
+        )
+
+        print("\nSTATUS: SUCCESS")
+
+    except Exception as error:
+
+        print("\n" + "=" * 65)
+        print("BRONZE LOAD FAILED".center(65))
+        print("=" * 65)
+
+        print(f"Error: {error}")
+
+        if connection is not None:
+
+            connection.rollback()
+
+            print(
+                "\nAll changes were rolled back. "
+                "Bronze tables restored to their previous state."
+            )
+
+        raise
+
+    finally:
+
+        if metadata_cursor is not None:
+            metadata_cursor.close()
+
+        if connection is not None:
+            connection.close()
+
+
+# ============================================================
+# 10. EXECUTION
 # ============================================================
 
 if __name__ == "__main__":
 
-    validate_all_tables()
-
+    main()
