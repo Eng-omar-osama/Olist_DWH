@@ -79,7 +79,7 @@ BEGIN
             customer_unique_id       NVARCHAR(50),
             customer_zip_code_prefix NVARCHAR(10),
             customer_city            NVARCHAR(100),
-            customer_state           NVARCHAR(2),
+            customer_state           NVARCHAR(5),
             dwh_create_date          DATETIME
         );
 
@@ -98,7 +98,7 @@ BEGIN
             geolocation_lat             DECIMAL(10, 6),
             geolocation_lng             DECIMAL(10, 6),
             geolocation_city            NVARCHAR(100),
-            geolocation_state           NVARCHAR(2),
+            geolocation_state           NVARCHAR(5),
             dwh_create_date             DATETIME
         );
 
@@ -116,7 +116,7 @@ BEGIN
             seller_id              NVARCHAR(50),
             seller_zip_code_prefix NVARCHAR(10),
             seller_city            NVARCHAR(100),
-            seller_state           NVARCHAR(2),
+            seller_state           NVARCHAR(5),
             dwh_create_date        DATETIME
         );
 
