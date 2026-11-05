@@ -1,17 +1,20 @@
+
 /*
 ================================================================================
 Project      : Olist Data Warehouse
 Layer        : Silver
 Procedure    : silver.create_silver_tables
 Description  : Initializes the Silver layer by recreating source-aligned
-               tables with full Unicode support and a DW creation timestamp.
+               tables and creating a persistent reference mapping table.
 
 Responsibilities:
-    - Drops existing Silver tables if they exist.
-    - Recreates all nine tables using source column definitions.
-    - Uses NVARCHAR for all textual columns to preserve Unicode characters.
+    - Drops existing Silver source tables if they exist.
+    - Recreates all nine source-aligned tables.
+    - Creates the seller city reference mapping table if it does not exist.
+    - Preserves existing mapping records across procedure executions.
+    - Uses NVARCHAR for textual columns to preserve Unicode characters.
     - Preserves numeric and date data types.
-    - Adds dwh_create_date DATETIME to every Silver table.
+    - Adds dwh_create_date DATETIME to every source Silver table.
     - Provides real-time execution logs.
     - Handles errors and rolls back failed transactions.
 
@@ -19,8 +22,9 @@ Execution:
     EXEC silver.create_silver_tables;
 
 Important Notes:
-    - This procedure performs a full table recreation.
-    - Existing Silver data will be lost.
+    - This procedure performs a full recreation of the nine source tables.
+    - Existing data in these nine Silver tables will be lost.
+    - The seller city mapping table is preserved if it already exists.
 ================================================================================
 */
 
@@ -37,7 +41,7 @@ BEGIN
         @StartTime DATETIME = GETDATE(),
         @EndTime DATETIME,
         @Duration INT,
-        @TotalTables INT = 9,
+        @TotalTables INT = 10,
         @CreatedTables INT = 0,
         @LogTime VARCHAR(19);
 
@@ -68,7 +72,7 @@ BEGIN
         RAISERROR('------------------------------------------------------------', 0, 1) WITH NOWAIT;
 
         -- 1. CRM CUSTOMERS
-        RAISERROR('[1/9] TABLE: silver.crm_cust_info', 0, 1) WITH NOWAIT;
+        RAISERROR('[1/10] TABLE: silver.crm_cust_info', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.crm_cust_info', 'U') IS NOT NULL
             DROP TABLE silver.crm_cust_info;
@@ -86,8 +90,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
+
         -- 2. CRM GEOLOCATION
-        RAISERROR('[2/9] TABLE: silver.crm_geolocation_info', 0, 1) WITH NOWAIT;
+        RAISERROR('[2/10] TABLE: silver.crm_geolocation_info', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.crm_geolocation_info', 'U') IS NOT NULL
             DROP TABLE silver.crm_geolocation_info;
@@ -105,8 +110,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
+
         -- 3. CRM SELLERS
-        RAISERROR('[3/9] TABLE: silver.crm_seller_info', 0, 1) WITH NOWAIT;
+        RAISERROR('[3/10] TABLE: silver.crm_seller_info', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.crm_seller_info', 'U') IS NOT NULL
             DROP TABLE silver.crm_seller_info;
@@ -115,16 +121,46 @@ BEGIN
         (
             seller_id              NVARCHAR(50),
             seller_zip_code_prefix NVARCHAR(10),
-            seller_city            NVARCHAR(100),
-            seller_state           NVARCHAR(5),
-            dwh_create_date        DATETIME
+            seller_city             NVARCHAR(100),
+            seller_state            NVARCHAR(5),
+            dwh_create_date         DATETIME
         );
 
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
-        -- 4. SALES ORDER ITEMS
-        RAISERROR('[4/9] TABLE: silver.sales_order_items', 0, 1) WITH NOWAIT;
+
+        -- 4. SELLER CITY REFERENCE MAPPING
+        RAISERROR('[4/10] TABLE: silver.ref_seller_city_mapping', 0, 1) WITH NOWAIT;
+
+        IF OBJECT_ID('silver.ref_seller_city_mapping', 'U') IS NULL
+        BEGIN
+            CREATE TABLE silver.ref_seller_city_mapping
+            (
+                SourceCity NVARCHAR(100) NOT NULL,
+                StandardCity NVARCHAR(100) NULL,
+                MappingStatus VARCHAR(20) NOT NULL,
+                Notes NVARCHAR(500) NULL,
+
+                CreatedAt DATETIME NOT NULL
+                    CONSTRAINT DF_ref_seller_city_mapping_CreatedAt
+                    DEFAULT GETDATE(),
+
+                CONSTRAINT PK_ref_seller_city_mapping
+                    PRIMARY KEY (SourceCity),
+
+                CONSTRAINT CK_ref_seller_city_mapping_Status
+                    CHECK (MappingStatus IN
+                        ('APPROVED', 'REJECTED', 'REVIEW'))
+            );
+        END;
+
+        SET @CreatedTables += 1;
+        RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
+
+
+        -- 5. SALES ORDER ITEMS
+        RAISERROR('[5/10] TABLE: silver.sales_order_items', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.sales_order_items', 'U') IS NOT NULL
             DROP TABLE silver.sales_order_items;
@@ -144,8 +180,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
-        -- 5. ORDER PAYMENTS
-        RAISERROR('[5/9] TABLE: silver.payments_order_info', 0, 1) WITH NOWAIT;
+
+        -- 6. ORDER PAYMENTS
+        RAISERROR('[6/10] TABLE: silver.payments_order_info', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.payments_order_info', 'U') IS NOT NULL
             DROP TABLE silver.payments_order_info;
@@ -163,8 +200,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
-        -- 6. ORDER REVIEWS
-        RAISERROR('[6/9] TABLE: silver.sales_order_reviews', 0, 1) WITH NOWAIT;
+
+        -- 7. ORDER REVIEWS
+        RAISERROR('[7/10] TABLE: silver.sales_order_reviews', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.sales_order_reviews', 'U') IS NOT NULL
             DROP TABLE silver.sales_order_reviews;
@@ -184,8 +222,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
-        -- 7. SALES ORDERS
-        RAISERROR('[7/9] TABLE: silver.sales_orders', 0, 1) WITH NOWAIT;
+
+        -- 8. SALES ORDERS
+        RAISERROR('[8/10] TABLE: silver.sales_orders', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.sales_orders', 'U') IS NOT NULL
             DROP TABLE silver.sales_orders;
@@ -206,8 +245,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
-        -- 8. CATALOG PRODUCTS
-        RAISERROR('[8/9] TABLE: silver.catalog_products', 0, 1) WITH NOWAIT;
+
+        -- 9. CATALOG PRODUCTS
+        RAISERROR('[9/10] TABLE: silver.catalog_products', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.catalog_products', 'U') IS NOT NULL
             DROP TABLE silver.catalog_products;
@@ -229,8 +269,9 @@ BEGIN
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
 
-        -- 9. CATEGORY TRANSLATION
-        RAISERROR('[9/9] TABLE: silver.catalog_category_translation', 0, 1) WITH NOWAIT;
+
+        -- 10. CATEGORY TRANSLATION
+        RAISERROR('[10/10] TABLE: silver.catalog_category_translation', 0, 1) WITH NOWAIT;
 
         IF OBJECT_ID('silver.catalog_category_translation', 'U') IS NOT NULL
             DROP TABLE silver.catalog_category_translation;
@@ -244,6 +285,7 @@ BEGIN
 
         SET @CreatedTables += 1;
         RAISERROR('      Status : SUCCESS', 0, 1) WITH NOWAIT;
+
 
         COMMIT TRANSACTION;
 
@@ -268,6 +310,7 @@ BEGIN
         RAISERROR('============================================================', 0, 1) WITH NOWAIT;
 
     END TRY
+
     BEGIN CATCH
         SET @ErrorNumber = ERROR_NUMBER();
         SET @ErrorMessage = ERROR_MESSAGE();
@@ -296,6 +339,7 @@ BEGIN
         RAISERROR('Transaction      : ROLLED BACK', 0, 1) WITH NOWAIT;
 
         RAISERROR('============================================================', 0, 1) WITH NOWAIT;
+
         THROW;
     END CATCH;
 END;
@@ -303,3 +347,4 @@ GO
 
 EXEC silver.create_silver_tables;
 GO
+
