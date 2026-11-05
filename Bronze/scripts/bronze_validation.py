@@ -825,6 +825,18 @@ def validate_all_tables():
     )
 
 
+    failed_tables = [
+        row for row in summary
+        if row.get("Status") != "PASS"
+    ]
+
+    if failed_tables:
+        print("\nVALIDATION FAILED!")
+        raise SystemExit(1)
+
+    print("\nVALIDATION PASSED!")
+    raise SystemExit(0)
+
 # ============================================================
 # 11. EXECUTION
 # ============================================================
